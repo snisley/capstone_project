@@ -36,51 +36,7 @@ prev <- read.csv("previous_application.csv")
 ```
 
 ## Introduction
-> Home Credit, a leading loan provider, faces the challenge of evaluating the risk associated with lending to individuals lacking a credit history. Successful loan repayments, including associated fees, are important for the company's revenue stream. To enhance the decision-making process, our project aims to develop a model that surpasses the current model's efficacy by at least 2%, leading to substantial financial gains and reduced risks for Home Credit. Currently, our focus is performing EDA on the datasets provided by Home Credit, identifying key predictors, uncovering outliers, and addressing missing data. By the end of this analysis, we aim to have a well-defined set of potential variables for the final model and strategies for imputing missing data where necessary. As we progress, our overarching goal remains to design a model that accurately predicts loan repayment behaviors, thereby minimizing the risk of default.
-
-
-## Questions to guided my exploration.
-
-> Does cash loan cash or revolving change between the two groups? 
-
-> How does the income distribution look for those who defaulted vs those who did not? 
-
-> What data is missing? 
-
-> Is the missing data important? 
-
-> How do I handle the missing data? 
-
-> What data contains outliers? 
-
-> How do I handle outlier data? 
-
-> Imbalances in categorical variables, such as flag documents? 
-
-> How to handle NZV variables
-
-> Differences in distributions among important variables
-
-> How does imputation change distributions? 
-
-> If imputation changes a distribution significantly, how should I handle that? 
-
-> Which transactional dataset would be best to join with the training set? 
-
-> What columns from the bureau set do I want to join? 
-
-> What will I look at to examine feature importance? 
-
-> Should I engineer new features? 
-
-> How will I examine their importance? 
-
-> How to handle collinearity? 
-
-> Using correlation to find variables to remove leads to improvements feature importance? 
-
-## Discussion of the data
-> I am not going to sugarcoat the fact that this was overwhelming for me. I probably spent way too much time just trying to understand all of the data. In the datasets provided, the primary 'train' dataset contains 122 variables with over 300,000 observations. Additionally, the 'bureau' dataset introduces 17 more variables, while the 'previous application' dataset contributes another 37. Collectively, these datasets offer a comprehensive view of Home Credit's customers. Each observation and variable has been provided as a potential predictor to aid in the development of our final decision-making model.
+Home Credit, a leading loan provider, faces the challenge of evaluating the risk associated with lending to individuals lacking a credit history. Successful loan repayments, including associated fees, are important for the company's revenue stream. To enhance the decision-making process, our project aims to develop a model that surpasses the current model's efficacy by at least 2%, leading to substantial financial gains and reduced risks for Home Credit. Currently, our focus is performing EDA on the datasets provided by Home Credit, identifying key predictors, uncovering outliers, and addressing missing data. By the end of this analysis, we aim to have a well-defined set of potential variables for the final model and strategies for imputing missing data where necessary. As we progress, our overarching goal remains to design a model that accurately predicts loan repayment behaviors, thereby minimizing the risk of default.
 
 ## Exploring target variable data
 
@@ -99,9 +55,6 @@ table(train_data$TARGET)
 
 
 ```
-
-> The data is unbalanced. We would achieve an accuracy of about 92% if we just assumed that nobody defaults on their loan. 
-
 
 ## initial data exploration and adjusting for outliers
 
@@ -185,9 +138,6 @@ clean4 <- clean3 %>%
 
 ```
 
-> I updated obvious outliers. However to explore the problem more I am checking the skewness and NZV of the data
-
-
 ## further data cleaning and analysis
 ```{r}
 # Numeric columns from clean4
@@ -232,8 +182,6 @@ clean4 <- clean4 %>%
 
 
 ```
-
-> recap above
 
 ## Feature Engineering
 
@@ -356,32 +304,11 @@ clean7 <- clean6 %>%
 clean7 %>% skim() %>% kable()
 
 
-
-
 ```
 
 ## imputation
 
 ```{r}
-## I wanted to use this method for imputation, but it took too long to process. 
-
-# Imputation methods
-#imp_methods <- sapply(clean6, function(x) {
-#  if(is.numeric(x)) {
-#    return("cart")
-#  } else if(is.factor(x) && length(unique(x)) == 2) {
-#    return("logreg")
-#  } else {
-#    return("polyreg")
-#  }
-#})
-# setup parallel 
-#cl <- makeCluster(8)
-
-# imputed
-#set.seed(123)  # Setting seed for reproducibility
-#imp <- mice(clean6, method = imp_methods, m = 3, n.imp.core=8)  
-#completed_data <- complete(imp, 1)
 
 
 ## ** Impute active ** 
@@ -415,12 +342,6 @@ clean7 %>% skim() %>% kable()
 
 clean8 %>% skim() %>% kable()
 
-## Since I noticed significant changes in the distributions for ext_source_1 in the first simple imputation,  I am removing it. ## Given it's importance, that may need to be re-addressed with my group. ext_source_3 might be a problem as well. 
-
-#clean8 <- clean8 %>%
-#  select(-EXT_SOURCE_1)
-
-
 ## Checking to see if feature importance is retained
 
 ## RF Formula
@@ -436,7 +357,6 @@ rf_model3 <- ranger(formula = formula_rf3,
 # Check feature importance
 rf_model3$variable.importance
 
-
 # Top 20 features based on RF model
 top_n <- 20  
 important_vars3 <- head(sort(rf_model3$variable.importance, decreasing = TRUE), top_n)
@@ -450,10 +370,6 @@ barplot(important_vars3, las = 2, main = "Top Variable Importance from Random Fo
 
 
 ```
-## missing data discussion 
-
-> When addressing missing data, my initial strategy was to identify variables that could potentially serve as influential predictors for the decision-making model. I believed that, once key variables were identified, I could employ advanced imputation techniques to handle the missing values. One such method I explored was MICE (Multiple Imputation by Chained Equations). However, given the size and complexity of the dataset, MICE was too resource-intensive and time-consuming, taking away dozens of hours from the project. Consequently, I pivoted to a simpler imputation method. After examination of the imputed data, I acknowledge that this choice might be a point of consideration when evaluating the performance of our models. Future efforts might necessitate revisiting and refining our imputation strategy to ensure optimal model performance.
-
 
 ## additioanl visualizations for extsource
 
@@ -572,24 +488,6 @@ ggplot(joined_data, aes(x=avg_credit, fill=as.factor(TARGET))) +
 ```
 
 
-## Final thoughts and results 
-> I initiated the project with an in-depth exploration of the data, establishing a list of pertinent questions to guide my analysis. My primary focus was on the target variable and understanding the balance between the classes, particularly the majority class.
-
->I then dove into exploring the data's summary statistics, distributions, and missing values, employing the skimr package for a comprehensive overview. Based on the insights from this exploration, I made specific data transformations, as detailed throughout the code.
-
->To kickstart feature selection, I chose the Random Forest (RF) algorithm. My first task was to validate the significance of the engineered features in relation to the target. Subsequently, I checked the variance and skewness across all variables, targeting those with near-zero variance and significant skewness for potential removal.
-
->Leveraging the insights from the RF model, I was able to filter out low-importance features, those with near-zero variance, and address collinearity. Collinear variables were specifically addressed through a combination of intuition and iterative testing. Whenever a collinear variable was excluded, I assessed the importance of its correlated counterpart in the model to see if its significance increased. 
-
->Having established a preliminary set of features, I proceeded to visually inspect distributions of key predictors to further understand their relationship with the target variable. I then started looking at the other datasets, such as the bureau set. I merged columns from bureau that I thought were important with the original training data. This led to the identification of five variables, which, based on the Random Forest analysis and exploratory plots, appeared to carry more predictive weight than some of the initially engineered features.
-
->However, before incorporating these new variables into my refined dataset, I plan to evaluate the performance of the current data. This will allow me to make informed decisions regarding imputation strategies, based on testing the model performance. After, I will look deeper into the potential advantages of the newly identified external variables, assessing their impact on model accuracy.
-
-
-
-
-
-
 
 
 ## Test Set Cleaning
@@ -689,10 +587,6 @@ test_cleaned2 %>% skim() %>% kable()
 ```
 
 
-
-
-
-
 Final Modeling
 
 ```{r}
@@ -780,7 +674,6 @@ abline(a=0, b=1, lty=2, col="gray")
 ```{r}
 
 
-
 # unique factors
 
 # Getting the factor variables
@@ -799,16 +692,6 @@ model_matrix_test <- model.matrix(~. - 1, data = test_cleaned2)
 # Check if the column names are the same
 all(colnames(model_matrix_train) == colnames(model_matrix_test))
 
-
-
-
-## for submit
-
-#pred_probs <- predict(model, newdata = model_matrix_test)
-
-#ids <- test_data$SK_ID_CURR
-
-#submission <- data.frame(SK_ID_CURR = ids, TARGET = pred_probs)
 
 #write_csv(submission, "C:/Users/snisl/Desktop/submission_file_5000.csv")
 
