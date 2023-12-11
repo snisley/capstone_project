@@ -1,0 +1,815 @@
+---
+title: "EDA Notebook"
+author: "Shane Nisley"
+output: 
+  html_document:
+    toc: true  
+    theme: united  
+    fig_caption: true  
+    highlight: tango  
+---
+
+
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(message=FALSE, warning=FALSE)
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+# Libraries
+
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, skimr, GGally, plotly, viridis, 
+               caret, DT, data.table, lightgbm, readr, e1071, ranger,
+               parallel, mice, corrplot, ggplot2, xgboost, pROC)
+
+#Data
+test_data <- read.csv("application_test.csv")
+train_data <- read.csv("application_train.csv")
+bureau <- read.csv("bureau.csv")
+b_balance <- read.csv("bureau_balance.csv")
+prev <- read.csv("previous_application.csv")
+
+
+
+```
+
+## Introduction
+> Home Credit, a leading loan provider, faces the challenge of evaluating the risk associated with lending to individuals lacking a credit history. Successful loan repayments, including associated fees, are important for the company's revenue stream. To enhance the decision-making process, our project aims to develop a model that surpasses the current model's efficacy by at least 2%, leading to substantial financial gains and reduced risks for Home Credit. Currently, our focus is performing EDA on the datasets provided by Home Credit, identifying key predictors, uncovering outliers, and addressing missing data. By the end of this analysis, we aim to have a well-defined set of potential variables for the final model and strategies for imputing missing data where necessary. As we progress, our overarching goal remains to design a model that accurately predicts loan repayment behaviors, thereby minimizing the risk of default.
+
+
+## Questions to guided my exploration.
+
+> Does cash loan cash or revolving change between the two groups? 
+
+> How does the income distribution look for those who defaulted vs those who did not? 
+
+> What data is missing? 
+
+> Is the missing data important? 
+
+> How do I handle the missing data? 
+
+> What data contains outliers? 
+
+> How do I handle outlier data? 
+
+> Imbalances in categorical variables, such as flag documents? 
+
+> How to handle NZV variables
+
+> Differences in distributions among important variables
+
+> How does imputation change distributions? 
+
+> If imputation changes a distribution significantly, how should I handle that? 
+
+> Which transactional dataset would be best to join with the training set? 
+
+> What columns from the bureau set do I want to join? 
+
+> What will I look at to examine feature importance? 
+
+> Should I engineer new features? 
+
+> How will I examine their importance? 
+
+> How to handle collinearity? 
+
+> Using correlation to find variables to remove leads to improvements feature importance? 
+
+## Discussion of the data
+> I am not going to sugarcoat the fact that this was overwhelming for me. I probably spent way too much time just trying to understand all of the data. In the datasets provided, the primary 'train' dataset contains 122 variables with over 300,000 observations. Additionally, the 'bureau' dataset introduces 17 more variables, while the 'previous application' dataset contributes another 37. Collectively, these datasets offer a comprehensive view of Home Credit's customers. Each observation and variable has been provided as a potential predictor to aid in the development of our final decision-making model.
+
+## Exploring target variable data
+
+```{r}
+
+## Show table of target variable
+         
+table(train_data$TARGET)
+
+## Majority Class
+(majority_class <- which.max(table(train_data$TARGET)))
+
+## Baseline accuracy
+(majorityPerc <- sum(train_data$TARGET == 0) / nrow(train_data))
+
+
+
+```
+
+> The data is unbalanced. We would achieve an accuracy of about 92% if we just assumed that nobody defaults on their loan. 
+
+
+## initial data exploration and adjusting for outliers
+
+```{r}
+## summary of data
+#summary(train_data)
+
+# Cash loans and Revolving loans
+table(train_data$NAME_CONTRACT_TYPE)
+
+
+## use skim to look over the data and get a feel for number of observations, range, and missing/ unique values
+train_data %>% skim() %>% kable()
+
+## My first step of cleaning the data is to remove columns that have less than 60% of their data
+
+# Calculate the proportion of missing values for each column
+missing_props <- map_dbl(train_data, ~mean(is.na(.)))
+
+# Filter out columns with more than 60% missing values
+clean1 <- train_data %>% select(which(missing_props <= 0.6))
+
+# using skim on clean1
+#clean1 %>% skim() %>% kable()
+
+# factoring categorical variables
+clean2 <- clean1
+
+clean2[] <- lapply(clean1, function(x) 
+  if (is.character(x)) factor(x) else x)
+
+#skim on clean2
+clean2 %>% skim() %>% kable()
+
+## Noticed the negative values for days, changing those rows to absolute values
+
+
+# Identify columns with any negative values and create clean3
+clean3 <- clean2 %>%
+  mutate(
+    DAYS_BIRTH = ifelse(DAYS_BIRTH < 0, abs(DAYS_BIRTH), DAYS_BIRTH),
+    DAYS_EMPLOYED = ifelse(DAYS_EMPLOYED < 0, abs(DAYS_EMPLOYED), DAYS_EMPLOYED),
+    DAYS_REGISTRATION = ifelse(DAYS_REGISTRATION < 0, abs(DAYS_REGISTRATION), DAYS_REGISTRATION),
+    DAYS_ID_PUBLISH = ifelse(DAYS_ID_PUBLISH < 0, abs(DAYS_ID_PUBLISH), DAYS_ID_PUBLISH),
+    DAYS_LAST_PHONE_CHANGE = ifelse(DAYS_LAST_PHONE_CHANGE < 0, abs(DAYS_LAST_PHONE_CHANGE), DAYS_LAST_PHONE_CHANGE))
+
+## skim on clean3
+#clean3 %>% skim() %>% kable()
+
+# summary of clean3 to see where to go next
+
+#summary(clean3)
+
+# dealing with outliers
+
+clean4 <- clean3 %>%
+  
+  # 1. Capping AMT_INCOME_TOTAL at the 99th percentile
+  mutate(AMT_INCOME_TOTAL = ifelse(AMT_INCOME_TOTAL > quantile(AMT_INCOME_TOTAL, 0.99, na.rm = TRUE), 
+                                   quantile(AMT_INCOME_TOTAL, 0.99, na.rm = TRUE), 
+                                   AMT_INCOME_TOTAL)) %>%
+  
+  # 2. Replacing impossible DAYS_EMPLOYED value with the median
+  mutate(DAYS_EMPLOYED = ifelse(DAYS_EMPLOYED == 365243, 
+                                median(DAYS_EMPLOYED[DAYS_EMPLOYED != 365243], na.rm = TRUE), 
+                                DAYS_EMPLOYED)) %>%
+  
+  # 3. Capping CNT_CHILDREN at 5 
+  mutate(CNT_CHILDREN = ifelse(CNT_CHILDREN > 5, 5, CNT_CHILDREN)) %>%
+  
+  # 4. Capping AMT_REQ_CREDIT_BUREAU_QRT at the 95th percentile
+  mutate(AMT_REQ_CREDIT_BUREAU_QRT = ifelse(AMT_REQ_CREDIT_BUREAU_QRT > quantile(AMT_REQ_CREDIT_BUREAU_QRT, 0.95, na.rm = TRUE),
+                                            quantile(AMT_REQ_CREDIT_BUREAU_QRT, 0.95, na.rm = TRUE),
+                                            AMT_REQ_CREDIT_BUREAU_QRT)) %>%
+  
+  # 5. Capping REGION_POPULATION_RELATIVE at the 99th percentile
+  mutate(REGION_POPULATION_RELATIVE = ifelse(REGION_POPULATION_RELATIVE > quantile(REGION_POPULATION_RELATIVE, 0.99, na.rm = TRUE), 
+                                             quantile(REGION_POPULATION_RELATIVE, 0.99, na.rm = TRUE), 
+                                             REGION_POPULATION_RELATIVE))
+
+
+```
+
+> I updated obvious outliers. However to explore the problem more I am checking the skewness and NZV of the data
+
+
+## further data cleaning and analysis
+```{r}
+# Numeric columns from clean4
+clean4_num <- clean4[, sapply(clean4, is.numeric)]
+
+# Compute skewness for each numeric column
+skewValues <- as.data.frame(apply(clean4_num, 2, function(x) skewness(x, na.rm = TRUE)))
+
+# Rename the column and set the column names as a new column
+colnames(skewValues)[1] <- "skew_values"
+skewValues <- skewValues %>% 
+  rownames_to_column(var = "Column")
+
+# Order the skew values in desc order
+skewValues <- skewValues %>%
+  arrange(desc(skew_values))
+
+# Display the results
+skewValues %>% 
+  datatable(filter = 'top', options = list(
+    pageLength = 15, autoWidth = F
+  ))
+
+
+
+# Identify zero and near-zero variance predictors
+nzv_info <- nearZeroVar(clean4, saveMetrics=TRUE)
+
+# Display variables with zero or near-zero variance
+nzv_cols <- nzv_info[nzv_info$nzv == TRUE, ]
+print(nzv_cols)
+
+## FLAG_MOBIL seems that it won't add much information to a model. Mostly everyone has a mobile phone. 
+
+# Remove FLAG_MOBIL and variable
+clean4 <- clean4 %>%
+  select(-FLAG_MOBIL, -SK_ID_CURR)
+
+
+## Flagged documents and CB inquiries are more difficult, because they could add value to the model. May remove later on
+
+
+
+```
+
+> recap above
+
+## Feature Engineering
+
+```{r}
+## creatiing ratios I feel would add value to the model
+
+featured <- clean4 %>%
+  mutate(income_credit_ratio = AMT_INCOME_TOTAL / AMT_CREDIT,
+         annuity_credit_ratio = AMT_ANNUITY / AMT_CREDIT,
+         age_employment_ratio = DAYS_BIRTH / DAYS_EMPLOYED)
+
+# The below groupings aim to better analyze the relationship between these variables and default
+
+# Age Grouping 
+featured$age_group <- cut((featured$DAYS_BIRTH/365), 
+                        breaks = c(20, 35, 50, 65, 100), 
+                        labels = c("Young", "Middle-aged", "Senior", "Retired"))
+
+# Employment Grouping
+featured$employment_group <- cut((featured$DAYS_EMPLOYED/365), 
+                               breaks = c(0, 5, 10, 20, 50), 
+                               labels = c("Fresh", "Junior", "Experienced", "Veteran"))
+
+# Create temp data for random forest
+temp_data <- featured %>% drop_na()
+
+# RF model
+rf_model <- ranger(TARGET ~ income_credit_ratio + annuity_credit_ratio + age_employment_ratio + employment_group + age_group, 
+                   data = temp_data, 
+                   num.trees = 100, 
+                   importance = 'impurity')
+
+# check feature importance
+rf_model$variable.importance
+
+# The ratios were all equally important
+# groupings didn't have a strong compared importance scores to the ratio, removing from dataset
+
+featured <- clean4 %>%
+  mutate(income_credit_ratio = AMT_INCOME_TOTAL / AMT_CREDIT,
+         annuity_credit_ratio = AMT_ANNUITY / AMT_CREDIT,
+         age_employment_ratio = DAYS_BIRTH / DAYS_EMPLOYED)
+
+clean5 <- featured
+
+clean5 <- clean5[!is.infinite(clean5$age_employment_ratio), ]
+
+
+```
+
+
+## feature importance
+
+```{r}
+
+
+
+# Create formula for all predictors
+all_predictors <- setdiff(names(temp_data), "TARGET")
+formula_rf <- as.formula(paste("TARGET ~", paste(all_predictors, collapse = " + ")))
+
+# RF model 1 
+rf_model <- ranger(formula = formula_rf, 
+                   data = temp_data, 
+                   num.trees = 100, 
+                   importance = 'impurity')
+
+# Check feature importance
+rf_model$variable.importance
+
+
+# remove totalarea_mode
+temp_data <- temp_data %>%
+  select(-TOTALAREA_MODE)
+
+all_predictors <- setdiff(names(temp_data), "TARGET")
+formula_rf <- as.formula(paste("TARGET ~", paste(all_predictors, collapse = " + ")))
+
+# RF model on new temp data
+rf_model <- ranger(formula = formula_rf, 
+                   data = temp_data, 
+                   num.trees = 100, 
+                   importance = 'impurity')
+
+# Check feature importance
+rf_model$variable.importance
+
+
+# Top 20 features based on RF model
+top_n <- 20  
+important_vars <- head(sort(rf_model$variable.importance, decreasing = TRUE), top_n)
+
+# Bar Plot
+barplot(important_vars, las = 2, main = "Top Variable Importance from Random Forest", col = "steelblue", cex.names = 0.58)
+
+
+
+## Many of the variables have low importance. I set my threshold for removal at 25%. I will impute data for the remaining variables with missing data. 
+
+# Extract variable importances from the random forest model
+feature_importances <- rf_model$variable.importance
+
+# Threshold 1st quartile
+threshold <- quantile(feature_importances, 0.25)
+
+# Identify columns to be removed
+cols_to_remove <- names(feature_importances[feature_importances < threshold])
+
+# Remove the identified columns from clean5
+clean6 <- clean5[, !(names(clean5) %in% cols_to_remove)]
+
+
+## due to near zero variance and high volume of missing data, I am also removing columns 36-66
+clean7 <- clean6 %>%
+  select(-c(36:66))
+
+## clean7 notes: features selected (RF). Outliers removed. Data structure explored. 
+
+# Looking at remaining predictors and columns with missing data
+clean7 %>% skim() %>% kable()
+
+
+
+
+```
+
+## imputation
+
+```{r}
+## I wanted to use this method for imputation, but it took too long to process. 
+
+# Imputation methods
+#imp_methods <- sapply(clean6, function(x) {
+#  if(is.numeric(x)) {
+#    return("cart")
+#  } else if(is.factor(x) && length(unique(x)) == 2) {
+#    return("logreg")
+#  } else {
+#    return("polyreg")
+#  }
+#})
+# setup parallel 
+#cl <- makeCluster(8)
+
+# imputed
+#set.seed(123)  # Setting seed for reproducibility
+#imp <- mice(clean6, method = imp_methods, m = 3, n.imp.core=8)  
+#completed_data <- complete(imp, 1)
+
+
+## ** Impute active ** 
+
+# Columns to be imputed by median
+median_cols <- c("AMT_ANNUITY", "AMT_GOODS_PRICE", "annuity_credit_ratio", "AMT_REQ_CREDIT_BUREAU_WEEK", "AMT_REQ_CREDIT_BUREAU_MON", "AMT_REQ_CREDIT_BUREAU_QRT",        
+"AMT_REQ_CREDIT_BUREAU_YEAR", "OBS_30_CNT_SOCIAL_CIRCLE", "DEF_30_CNT_SOCIAL_CIRCLE", 
+"OBS_60_CNT_SOCIAL_CIRCLE", "DEF_60_CNT_SOCIAL_CIRCLE", "DAYS_LAST_PHONE_CHANGE", "EXT_SOURCE_1", "EXT_SOURCE_2")
+
+# Columns to be imputed by mean
+mean_cols <- c("CNT_FAM_MEMBERS", "EXT_SOURCE_3")
+
+
+# clean8 verision for datasets
+clean8 <- clean7
+
+# Impute by median
+for (col in median_cols) {
+  clean8 <- clean8 %>%
+    mutate(!!col := ifelse(is.na(!!sym(col)), median(!!sym(col), na.rm = TRUE), !!sym(col)))
+}
+
+# Impute by mean
+for (col in mean_cols) {
+  clean8 <- clean8 %>%
+    mutate(!!col := ifelse(is.na(!!sym(col)), mean(!!sym(col), na.rm = TRUE), !!sym(col)))
+}
+
+
+clean7 %>% skim() %>% kable()
+
+clean8 %>% skim() %>% kable()
+
+## Since I noticed significant changes in the distributions for ext_source_1 in the first simple imputation,  I am removing it. ## Given it's importance, that may need to be re-addressed with my group. ext_source_3 might be a problem as well. 
+
+#clean8 <- clean8 %>%
+#  select(-EXT_SOURCE_1)
+
+
+## Checking to see if feature importance is retained
+
+## RF Formula
+all_predictors3 <- setdiff(names(clean8), "TARGET")
+formula_rf3 <- as.formula(paste("TARGET ~", paste(all_predictors3, collapse = " + ")))
+
+# RF model on new temp data
+rf_model3 <- ranger(formula = formula_rf3, 
+                   data = clean8, 
+                   num.trees = 100, 
+                   importance = 'impurity')
+
+# Check feature importance
+rf_model3$variable.importance
+
+
+# Top 20 features based on RF model
+top_n <- 20  
+important_vars3 <- head(sort(rf_model3$variable.importance, decreasing = TRUE), top_n)
+
+# Bar Plot
+barplot(important_vars, las = 2, main = "Top Variable Importance from Random Forest 1", col = "steelblue", cex.names = 0.55)
+
+barplot(important_vars3, las = 2, main = "Top Variable Importance from Random Forest 3", col = "steelblue", cex.names = 0.55)
+
+## Important predictors changed slightly, but not significantly 
+
+
+```
+## missing data discussion 
+
+> When addressing missing data, my initial strategy was to identify variables that could potentially serve as influential predictors for the decision-making model. I believed that, once key variables were identified, I could employ advanced imputation techniques to handle the missing values. One such method I explored was MICE (Multiple Imputation by Chained Equations). However, given the size and complexity of the dataset, MICE was too resource-intensive and time-consuming, taking away dozens of hours from the project. Consequently, I pivoted to a simpler imputation method. After examination of the imputed data, I acknowledge that this choice might be a point of consideration when evaluating the performance of our models. Future efforts might necessitate revisiting and refining our imputation strategy to ensure optimal model performance.
+
+
+## additioanl visualizations for extsource
+
+```{r}
+# Violin Plot for EXT_SOURCE_2 vs TARGET
+ggplot(clean8, aes(x=as.factor(TARGET), y=EXT_SOURCE_2, fill=as.factor(TARGET))) + 
+  geom_violin(alpha=0.7) +
+  ggtitle("Violin Plot of EXT_SOURCE_2 vs TARGET")
+
+# Boxplot for EXT_SOURCE_2 vs TARGET
+ggplot(clean8, aes(x=as.factor(TARGET), y=EXT_SOURCE_2, fill=as.factor(TARGET))) + 
+  geom_boxplot(alpha=0.7) +
+  ggtitle("Boxplot of EXT_SOURCE_2 vs TARGET")
+
+# Density Plot for EXT_SOURCE_2 segmented by TARGET
+ggplot(clean8, aes(x=EXT_SOURCE_2, fill=as.factor(TARGET))) + 
+  geom_density(alpha=0.7) +
+  ggtitle("Density Plot of EXT_SOURCE_2 segmented by TARGET")
+
+
+# Violin Plot for EXT_SOURCE_31 vs TARGET
+ggplot(clean8, aes(x=as.factor(TARGET), y=EXT_SOURCE_3, fill=as.factor(TARGET))) + 
+  geom_violin(alpha=0.7) +
+  ggtitle("Violin Plot of EXT_SOURCE_3 vs TARGET")
+
+# Boxplot for EXT_SOURCE_3 vs TARGET
+ggplot(clean8, aes(x=as.factor(TARGET), y=EXT_SOURCE_3, fill=as.factor(TARGET))) + 
+  geom_boxplot(alpha=0.7) +
+  ggtitle("Boxplot of EXT_SOURCE_3 vs TARGET")
+
+# Density Plot for EXT_SOURCE_3 segmented by TARGET
+ggplot(clean8, aes(x=EXT_SOURCE_3, fill=as.factor(TARGET))) + 
+  geom_density(alpha=0.7) +
+  ggtitle("Density Plot of EXT_SOURCE_3 segmented by TARGET")
+
+## You can see that EXT_SOURCE_3 was heavily skewed towards the mean by my imputation. 
+##  I am going to have look into finding a better method before including it in the final model. 
+
+```
+
+
+## Joining transactional data
+
+```{r}
+
+
+bureau_aggregated <- bureau %>%
+  group_by(SK_ID_CURR) %>%
+  summarize(
+    avg_credit = mean(AMT_CREDIT_SUM, na.rm = TRUE),
+    count_loans = n(),
+    active_loans = sum(CREDIT_ACTIVE == "Active", na.rm = TRUE),
+    closed_loans = sum(CREDIT_ACTIVE == "Closed", na.rm = TRUE),
+    avg_days_credit = mean(DAYS_CREDIT, na.rm = TRUE),
+    avg_days_overdue = mean(CREDIT_DAY_OVERDUE, na.rm = TRUE),
+  )
+
+## had to use an earlier version of the data for unique identifier
+
+joined_data <- left_join(clean3, bureau_aggregated, by = "SK_ID_CURR")
+
+
+## Removing NAs for RF model to check feature importance
+temp_data2 <- na.omit(joined_data[, c("TARGET", "avg_credit", "count_loans", "active_loans", "closed_loans", "avg_days_credit", "avg_days_overdue")])
+
+
+
+# RF model number 4
+rf_model4 <- ranger(factor(TARGET) ~ avg_credit + count_loans + active_loans + closed_loans + avg_days_credit + avg_days_overdue, 
+                    data = temp_data2, 
+                    num.trees = 100, 
+                    importance = 'impurity')
+
+
+# check feature importance
+rf_model4$variable.importance
+
+
+## plotting the two most important variables 
+
+#avg_days_credit
+
+# Violin Plot for avg_days_credit vs TARGET
+ggplot(joined_data, aes(x=as.factor(TARGET), y=avg_days_credit, fill=as.factor(TARGET))) + 
+  geom_violin(alpha=0.7) +
+  ggtitle("Violin Plot of avg_days_credit vs TARGET")
+
+# Boxplot for avg_days_credit vs TARGET
+ggplot(joined_data, aes(x=as.factor(TARGET), y=avg_days_credit, fill=as.factor(TARGET))) + 
+  geom_boxplot(alpha=0.7) +
+  ggtitle("Boxplot of avg_days_credit vs TARGET")
+
+# Density Plot for avg_days_credit segmented by TARGET
+ggplot(joined_data, aes(x=avg_days_credit, fill=as.factor(TARGET))) + 
+  geom_density(alpha=0.7) +
+  ggtitle("Density Plot of avg_days_credit segmented by TARGET")
+
+## avg_credit
+
+# Violin Plot for avg_credit vs TARGET
+ggplot(joined_data, aes(x=as.factor(TARGET), y=avg_credit, fill=as.factor(TARGET))) + 
+  geom_violin(alpha=0.7) +
+  ggtitle("Violin Plot of avg_credit vs TARGET")
+
+# Boxplot for avg_credit vs TARGET
+ggplot(joined_data, aes(x=as.factor(TARGET), y=avg_credit, fill=as.factor(TARGET))) + 
+  geom_boxplot(alpha=0.7) +
+  ggtitle("Boxplot of avg_credit vs TARGET")
+
+# Density Plot for avg_credit segmented by TARGET
+ggplot(joined_data, aes(x=avg_credit, fill=as.factor(TARGET))) + 
+  geom_density(alpha=0.7) +
+  ggtitle("Density Plot of avg_credit segmented by TARGET")
+
+
+```
+
+
+## Final thoughts and results 
+> I initiated the project with an in-depth exploration of the data, establishing a list of pertinent questions to guide my analysis. My primary focus was on the target variable and understanding the balance between the classes, particularly the majority class.
+
+>I then dove into exploring the data's summary statistics, distributions, and missing values, employing the skimr package for a comprehensive overview. Based on the insights from this exploration, I made specific data transformations, as detailed throughout the code.
+
+>To kickstart feature selection, I chose the Random Forest (RF) algorithm. My first task was to validate the significance of the engineered features in relation to the target. Subsequently, I checked the variance and skewness across all variables, targeting those with near-zero variance and significant skewness for potential removal.
+
+>Leveraging the insights from the RF model, I was able to filter out low-importance features, those with near-zero variance, and address collinearity. Collinear variables were specifically addressed through a combination of intuition and iterative testing. Whenever a collinear variable was excluded, I assessed the importance of its correlated counterpart in the model to see if its significance increased. 
+
+>Having established a preliminary set of features, I proceeded to visually inspect distributions of key predictors to further understand their relationship with the target variable. I then started looking at the other datasets, such as the bureau set. I merged columns from bureau that I thought were important with the original training data. This led to the identification of five variables, which, based on the Random Forest analysis and exploratory plots, appeared to carry more predictive weight than some of the initially engineered features.
+
+>However, before incorporating these new variables into my refined dataset, I plan to evaluate the performance of the current data. This will allow me to make informed decisions regarding imputation strategies, based on testing the model performance. After, I will look deeper into the potential advantages of the newly identified external variables, assessing their impact on model accuracy.
+
+
+
+
+
+
+
+
+## Test Set Cleaning
+
+```{r}
+
+
+clean_test_data <- function(test_data) {
+
+  # Part 2: Handling Missing Values and Outliers
+  # Calculate the proportion of missing values for each column
+  missing_props <- map_dbl(test_data, ~mean(is.na(.)))
+  # Filter out columns with more than 60% missing values
+  test1 <- test_data %>% select(which(missing_props <= 0.6))
+  
+  # Factoring categorical variables
+  test2 <- test1
+  test2[] <- lapply(test1, function(x) if (is.character(x)) factor(x) else x)
+  
+  # Changing negative values to absolute values
+  test3 <- test2 %>%
+    mutate(
+      DAYS_BIRTH = ifelse(DAYS_BIRTH < 0, abs(DAYS_BIRTH), DAYS_BIRTH),
+      DAYS_EMPLOYED = ifelse(DAYS_EMPLOYED < 0, abs(DAYS_EMPLOYED), DAYS_EMPLOYED),
+      DAYS_REGISTRATION = ifelse(DAYS_REGISTRATION < 0, abs(DAYS_REGISTRATION), DAYS_REGISTRATION),
+      DAYS_ID_PUBLISH = ifelse(DAYS_ID_PUBLISH < 0, abs(DAYS_ID_PUBLISH), DAYS_ID_PUBLISH),
+      DAYS_LAST_PHONE_CHANGE = ifelse(DAYS_LAST_PHONE_CHANGE < 0, abs(DAYS_LAST_PHONE_CHANGE), DAYS_LAST_PHONE_CHANGE))
+  
+  # Dealing with outliers
+  test4 <- test3 %>%
+    mutate(AMT_INCOME_TOTAL = ifelse(AMT_INCOME_TOTAL > quantile(AMT_INCOME_TOTAL, 0.99, na.rm = TRUE), 
+                                     quantile(AMT_INCOME_TOTAL, 0.99, na.rm = TRUE), 
+                                     AMT_INCOME_TOTAL)) %>%
+    mutate(DAYS_EMPLOYED = ifelse(DAYS_EMPLOYED == 365243, 
+                                  median(DAYS_EMPLOYED[DAYS_EMPLOYED != 365243], na.rm = TRUE), 
+                                  DAYS_EMPLOYED)) %>%
+    mutate(CNT_CHILDREN = ifelse(CNT_CHILDREN > 5, 5, CNT_CHILDREN)) %>%
+    mutate(AMT_REQ_CREDIT_BUREAU_QRT = ifelse(AMT_REQ_CREDIT_BUREAU_QRT > quantile(AMT_REQ_CREDIT_BUREAU_QRT, 0.95, na.rm = TRUE),
+                                              quantile(AMT_REQ_CREDIT_BUREAU_QRT, 0.95, na.rm = TRUE),
+                                              AMT_REQ_CREDIT_BUREAU_QRT)) %>%
+    mutate(REGION_POPULATION_RELATIVE = ifelse(REGION_POPULATION_RELATIVE > quantile(REGION_POPULATION_RELATIVE, 0.99, na.rm = TRUE), 
+                                               quantile(REGION_POPULATION_RELATIVE, 0.99, na.rm = TRUE), 
+                                               REGION_POPULATION_RELATIVE))
+  
+  # Part 4: Feature Engineering
+  test4 <- test4 %>%
+    mutate(income_credit_ratio = AMT_INCOME_TOTAL / AMT_CREDIT,
+           annuity_credit_ratio = AMT_ANNUITY / AMT_CREDIT,
+           age_employment_ratio = DAYS_BIRTH / DAYS_EMPLOYED)
+  # Remove infinite values
+  test4 <- test4[!is.infinite(test4$age_employment_ratio), ]
+  
+  # Part 5: More Cleaning and Final Preparations
+  # Impute missing values
+  median_cols <- c("AMT_ANNUITY", "AMT_GOODS_PRICE", "annuity_credit_ratio", "AMT_REQ_CREDIT_BUREAU_WEEK", "AMT_REQ_CREDIT_BUREAU_MON", "AMT_REQ_CREDIT_BUREAU_QRT",        
+"AMT_REQ_CREDIT_BUREAU_YEAR", "OBS_30_CNT_SOCIAL_CIRCLE", "DEF_30_CNT_SOCIAL_CIRCLE", 
+"OBS_60_CNT_SOCIAL_CIRCLE", "DEF_60_CNT_SOCIAL_CIRCLE", "DAYS_LAST_PHONE_CHANGE", "EXT_SOURCE_1", "EXT_SOURCE_2")
+  mean_cols <- c("CNT_FAM_MEMBERS", "EXT_SOURCE_3")
+  
+  for (col in median_cols) {
+    test4 <- test4 %>%
+      mutate(!!col := ifelse(is.na(!!sym(col)), median(!!sym(col), na.rm = TRUE), !!sym(col)))
+  }
+  
+  for (col in mean_cols) {
+    test4 <- test4 %>%
+      mutate(!!col := ifelse(is.na(!!sym(col)), mean(!!sym(col), na.rm = TRUE), !!sym(col)))
+  }
+
+
+  return(test4)
+}
+
+library(purrr)
+
+test_cleaned <- clean_test_data(test_data)
+
+
+
+# Get the names of the columns in clean8
+clean8_columns <- colnames(clean8)
+
+# Find the common columns between test_cleaned and clean8
+common_columns <- intersect(colnames(test_cleaned), clean8_columns)
+
+# Select only the common columns from test_cleaned
+test_cleaned2 <- test_cleaned[, common_columns, drop = FALSE]
+
+
+test_cleaned2 %>% skim() %>% kable()
+
+
+
+
+
+
+```
+
+
+
+
+
+
+Final Modeling
+
+```{r}
+
+# 1. Installing and loading necessary libraries
+if (!requireNamespace("xgboost", quietly = TRUE)) install.packages("xgboost")
+if (!requireNamespace("caret", quietly = TRUE)) install.packages("caret")
+library(xgboost)
+library(caret)
+
+
+# Preparing the data for training and testing
+set.seed(42)
+
+labels <- clean8$TARGET
+data <- clean8 %>% select(-TARGET)
+
+# Splitting the data into training (80%) and validation (20%) sets
+index <- createDataPartition(labels, p = 0.85, list = FALSE)
+train_data <- data[index, ]
+train_labels <- labels[index]
+test_data <- data[-index, ]
+test_labels <- labels[-index]
+
+# Converting data to matrix
+train_matrix <- xgb.DMatrix(data = model.matrix(~. - 1, data = train_data), label = train_labels)
+test_matrix <- xgb.DMatrix(data = model.matrix(~. - 1, data = test_data), label = test_labels)
+
+# Training the xgboost model
+params <- list(
+  objective = "binary:logistic",
+  eta = 0.1,
+  max_depth = 6,
+  nthread = 3,
+  eval_metric = "logloss"
+)
+
+
+
+p <- list(objective = "binary:logistic"
+         , booster = "gbtree"
+         , eval_metric = "logloss"
+         , nthread = 6
+         , eta = 0.01
+         , max_depth = 12
+         , min_child_weight = 25
+         , subsample = 0.75
+         , scale_pos_weight = 2
+         , colsample_bytree = 0.75
+)
+
+
+model <- xgboost(
+  data = train_matrix,
+  params = p,
+  nrounds = 20,
+  gamma = 0.009,
+)
+
+
+
+# Making predictions on the test set
+pred_probs <- predict(model, newdata = test_matrix)
+pred_labels <- as.numeric(pred_probs > 0.50)  # Convert to 0 and 1 based on threshold
+
+# Calculating the accuracy of the model on the test set
+accuracy <- sum(pred_labels == test_labels) / length(test_labels)
+print(accuracy)
+
+cm <- confusionMatrix(as.factor(pred_labels), as.factor(test_labels))
+print(cm)
+
+
+roc_result <- roc(test_labels, pred_probs)
+auc(roc_result)
+
+
+plot(roc_result, main="ROC Curve")
+abline(a=0, b=1, lty=2, col="gray")  
+
+
+```
+
+
+```{r}
+
+
+
+# unique factors
+
+# Getting the factor variables
+factor_vars <- sapply(train_data, is.factor)
+
+# Getting the unique levels of factor variables in the training data
+unique_levels <- lapply(train_data[factor_vars], function(x) unique(levels(x)))
+
+# Setting the levels of factor variables in the test data to be the same as in the training data
+test_cleaned2[factor_vars] <- Map(function(x, y) factor(x, levels = y), test_cleaned2[factor_vars], unique_levels)
+
+# create the model matrices
+model_matrix_train <- model.matrix(~. - 1, data = clean8)
+model_matrix_test <- model.matrix(~. - 1, data = test_cleaned2)
+
+# Check if the column names are the same
+all(colnames(model_matrix_train) == colnames(model_matrix_test))
+
+
+
+
+## for submit
+
+#pred_probs <- predict(model, newdata = model_matrix_test)
+
+#ids <- test_data$SK_ID_CURR
+
+#submission <- data.frame(SK_ID_CURR = ids, TARGET = pred_probs)
+
+#write_csv(submission, "C:/Users/snisl/Desktop/submission_file_5000.csv")
+
+``` 
