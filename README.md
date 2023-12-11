@@ -33,4 +33,5 @@ The primary hurdles stemmed from the initial data. First, the class imbalance, w
 ### What I learned in the project
 The project taught me that large datasets can complicate modeling. However, I also learned to transform extensive, flawed data into a predictive dataset, effectively training a model that generalized well to both our test splits and the Kaggle dataset. The overall process gave me much more confidence in my ability, given that most datasets I've used in my career, both professionally and academically, were much cleaner and smaller in comparison.
 
-
+**Link to final presentation**
+https://github.com/snisley/capstone_project/blob/main/Capstone_Presentation_and_Results.pdf
